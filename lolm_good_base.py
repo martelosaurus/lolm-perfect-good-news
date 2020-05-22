@@ -31,6 +31,10 @@ def _q(t,T):
         return np.nan
 
 @np.vectorize
+def _H(t,T):
+    """Auxiliary function (appears often)"""
+
+@np.vectorize
 def f(t,y,T): 
     """
     Right-hand-side for Lambda-Gamma ODE
@@ -50,8 +54,8 @@ def f(t,y,T):
     """
     F = Q*(1.-_q(t,T))/(_q(t,T)*(1.-Q)-Q*np.exp(-l*t)*(1.-_q(t,T)))
     y_prime = np.zeros(y.shape)
-    y_prime[0] = l*np.exp(-l*t)*(1.-y[1])
-    y_prime[1] = b*F*y[0]-b*(1.-y[1])
+    y_prime[0] = l*np.exp(-l*t)*(1.-y[1]) # dLam/dt
+    y_prime[1] = b*F*y[0]-b*(1.-y[1])     # dGam/dt
     return y_prime
 
 @np.vectorize
@@ -121,7 +125,7 @@ def tau(T,upper=False):
 
 class Model:
 
-    def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=7,Y=1.):
+  def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=7,Y=1.):
         """
         Parameters
         ----------
@@ -146,6 +150,10 @@ class Model:
         self.r = .5
         self.Q = .7
         self.Y = 1.
+
+        # paramter checks
+        if c>Q*l*Y/r or l>r+b:
+            raise Exception('c>Q*l*Y/r or l>r+b')
 
         # title string
         self.titstr = '$\\pi = $' + str(b) + ', '
