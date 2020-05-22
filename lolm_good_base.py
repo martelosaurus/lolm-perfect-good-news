@@ -8,7 +8,7 @@ def _g(t):
     return Q*np.exp(-l*t)/(Q*np.exp(-l*t)+1.-Q)
 
 @np.vectorize
-def S(t,T): 
+def _S(t,T): 
     """surplus"""
     if t <= T:
         Z = np.exp(-(r+b)*(T-t))
@@ -17,16 +17,16 @@ def S(t,T):
         return np.nan
 
 @np.vectorize
-def VL(t,T): 
+def _VL(t,T): 
     """L-value"""
-    qo = fixed_quad(lambda s: _g(s)*(Y+S(s,T))*np.exp(-r*(s-t)),t,T)
+    qo = fixed_quad(lambda s: _g(s)*(Y+_S(s,T))*np.exp(-r*(s-t)),t,T)
     return VL1*np.exp(-r*(T-t))+l*qo[0]
 
 @np.vectorize
 def _q(t,T): 
     """market beliefs"""
     if t <= T:
-        return r*(VL(t,T)+c)/(l*Y)
+        return r*(_VL(t,T)+c)/(l*Y)
     else:
         return np.nan
 
@@ -79,12 +79,12 @@ def findbif(x):
     The bifurcation point is the point (T,t) at which dq/dt = 0 and q = Q
     """
     T, t = x
-    return np.array([VL(t,T)-(Q*l*Y/r-c),r*VL(t,T)-l*_g(t)*(Y+S(t,T))])
+    return np.array([_VL(t,T)-(Q*l*Y/r-c),r*_VL(t,T)-l*_g(t)*(Y+_S(t,T))])
 
 @np.vectorize
 def that(T): 
     """
-    Find initial time for each final time
+    Find initial time for each final time using market beliefs
 
     Parameters
     ----------
@@ -95,9 +95,49 @@ def that(T):
     sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0,events=that_evnt)
     return sol.y[1][-1]
 
+@np.vectorize
+def tau(T,upper=False): 
+    """
+    Find initial time for each final time using indifference
+
+    Parameters
+    ----------
+    T : float
+        Final time
+    upper : bool
+        If True, returns both roots of q(t_hat,T) = Q; if False, returns the 
+        lesser root.
+    """
+    if T>T0:
+        if upper:
+            return root_scalar(lambda t: q(t,T)-Q,bracket=(t0,T)).root
+        else:
+            if T<T1:
+                return root_scalar(lambda t: q(t,T)-Q,bracket=(0,t0)).root
+            else:
+                return np.nan
+    else:
+        return np.nan
+
 class Model:
 
     def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=7,Y=1.):
+        """
+        Parameters
+        ----------
+        b : float
+            Arrival rate of liquidity shock (pi in paper)
+        c : float
+            Transaction cost
+        l : float
+            Arrival rate of breakthrough (lambda in paper)
+        r : float
+            Discount rate
+        Q : float
+            Fraction of assets of quality H
+        Y : float
+            Dividend
+        """
 
         # parameters
         self.b = .1
@@ -128,13 +168,10 @@ class Model:
         self.opttol = 1.e-6
 
         # solve for equilibrium T_star
-        if True:
-            if np.isinf(T1):
-                T_opt = root_scalar(G2,x0=1.5*T0,x1=2.*T0).root
-            else:
-                T_opt = root_scalar(G2,bracket=((1.+opttol)*T0,(1.-opttol)*T1)).root
+        if np.isinf(T1):
+            T_opt = root_scalar(G2,x0=1.5*T0,x1=2.*T0).root
         else:
-            T_opt = T1
+            T_opt = root_scalar(G2,bracket=((1.+opttol)*T0,(1.-opttol)*T1)).root
 
         sol = root(findbif,np.array([2.,1.]))
         T0, t0 = sol.x
@@ -209,4 +246,48 @@ class Model:
         plt.title(titstr)
         plt.grid()
         plt.savefig(fname + 'Tt.pdf')
+        plt.show()
+
+    def plotqGz(self,T,upper):
+
+        # time vectors
+        t0_vec = np.linspace(0.,tau(T,upper),N) 
+        t1_vec = np.linspace(tau(T,upper),T,N) 
+        t2_vec = np.linspace(T,tau(T,upper)+T,N) 
+
+        # belief vectors
+        yy1_vec = np.zeros(N)
+        qG0_vec = Q*np.ones(N)
+        GG1_vec = np.zeros(N)
+        qq1_vec = np.zeros(N)
+        qG2_vec = np.ones(N)
+        GG21_vec = G2(t1_vec,T,upper)
+
+        # t-vec
+        t_vec = np.hstack((t0_vec,t1_vec,t2_vec))
+
+        # compute the beliefs
+        for j in range(0,N):		
+            qq1_vec[j] = q(t1_vec[j],T)
+            yy1_vec[j] = g(t1_vec[j])/(1.-g(t1_vec[j])) 
+
+        q_vec = np.hstack((Q*np.ones(N),qq1_vec,qG2_vec))
+        G_vec = np.hstack((np.zeros(N),np.ones(N)-GG21_vec*np.exp(b*t1_vec),qG2_vec))
+
+        fig, ax1 = plt.subplots()
+
+        color = 'tab:red'
+        ax1.set_xlabel('time')
+        ax1.set_ylabel('prices',color=color)
+        ax1.plot(t_vec,q_vec,color=color)
+        ax1.plot(t_vec,g(t_vec),'--k')
+        ax1.tick_params(axis='y',labelcolor=color)
+
+        ax2 = ax1.twinx()  
+
+        color = 'tab:blue'
+        ax2.set_ylabel('volume',color=color)  
+        ax2.plot(t_vec,G_vec,color=color)
+        ax2.tick_params(axis='y',labelcolor=color)
+        fig.tight_layout()  
         plt.show()
