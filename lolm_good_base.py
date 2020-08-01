@@ -3,129 +3,154 @@ import matplotlib.pyplot as plt
 from scipy.integrate import quad, fixed_quad, solve_ivp
 from scipy.optimize import root_scalar, root
 
-def _g(t): 
-    """owner's beliefs"""
-    return Q*np.exp(-l*t)/(Q*np.exp(-l*t)+1.-Q)
-
-@np.vectorize
-def _S(t,T): 
-    """surplus"""
-    if t <= T:
-        Z = np.exp(-(r+b)*(T-t))
-        return ((1.-_g(t))/(1.-_g(T)))*(C1*Z+(1.-_g(T))*C2*(1.-Z))
-    else:
-        return np.nan
-
-@np.vectorize
-def _VL(t,T): 
-    """L-value"""
-    qo = fixed_quad(lambda s: _g(s)*(Y+_S(s,T))*np.exp(-r*(s-t)),t,T)
-    return VL1*np.exp(-r*(T-t))+l*qo[0]
-
-@np.vectorize
-def _q(t,T): 
-    """market beliefs"""
-    if t <= T:
-        return r*(_VL(t,T)+c)/(l*Y)
-    else:
-        return np.nan
-
-@np.vectorize
-def _H(t,T):
-    """Auxiliary function (appears often)"""
-
-@np.vectorize
-def f(t,y,T): 
-    """
-    Right-hand-side for Lambda-Gamma ODE
+class _Model:
     
-    Parameters
-    ----------
-    t : float
-        time
-    y : ndarray
-        y[0] is Lambda, y[1] is Gamma
-    T : float
-        H-type selling time
+    def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=.7,Y=1.):
+        """
+        Parameters
+        ----------
+        b : float
+            Arrival rate of liquidity shock (pi in paper)
+        c : float
+            Transaction cost
+        l : float
+            Arrival rate of breakthrough (lambda in paper)
+        r : float
+            Discount rate
+        Q : float
+            Fraction of assets of quality H
+        Y : float
+            Dividend
+        """
 
-    Returns
-    -------
-    out : ndarray
-    """
-    F = Q*(1.-_q(t,T))/(_q(t,T)*(1.-Q)-Q*np.exp(-l*t)*(1.-_q(t,T)))
-    y_prime = np.zeros(y.shape)
-    y_prime[0] = l*np.exp(-l*t)*(1.-y[1]) # dLam/dt
-    y_prime[1] = b*F*y[0]-b*(1.-y[1])     # dGam/dt
-    return y_prime
+        # parameters
+        self.b = b
+        self.c = c
+        self.l = l
+        self.r = r
+        self.Q = Q
+        self.Y = Y
 
-@np.vectorize
-def Gamma(T,t_hat,t=None):
-    """solves for Gamma: either at T or over [t_hat,T]"""
-    y0 = np.array([1.-np.exp(-l*t_hat),0.]) 
-    if t:
-        sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0,t_eval=t)
-        return sol.y[1]
-    else:
-        sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0)
+        # paramter checks
+        if c>Q*l*Y/r or l>r+b:
+            raise Exception('c>Q*l*Y/r or l>r+b')
+
+    def _g(t): 
+        """owner's beliefs"""
+        return Q*np.exp(-l*t)/(Q*np.exp(-l*t)+1.-Q)
+
+    def _S(t,T): 
+        """surplus"""
+        if t <= T:
+            Z = np.exp(-(r+b)*(T-t))
+            return ((1.-_g(t))/(1.-_g(T)))*(C1*Z+(1.-_g(T))*C2*(1.-Z))
+        else:
+            return np.nan
+
+    def _VL(t,T): 
+        """L-value"""
+        qo = fixed_quad(lambda s: _g(s)*(Y+_S(s,T))*np.exp(-r*(s-t)),t,T)
+        return VL1*np.exp(-r*(T-t))+l*qo[0]
+
+    def _q(t,T): 
+        """market beliefs"""
+        if t <= T:
+            return r*(_VL(t,T)+c)/(l*Y)
+        else:
+            return np.nan
+
+    def _H(t,T):
+        """Auxiliary function (appears often)"""
+        pass
+
+    def _f(t,y,T): 
+        """
+        Right-hand-side for Lambda-Gamma ODE
+        
+        Parameters
+        ----------
+        t : float
+            time
+        y : ndarray
+            y[0] is Lambda, y[1] is Gamma
+        T : float
+            H-type selling time
+
+        Returns
+        -------
+        out : ndarray
+        """
+        F = Q*(1.-_q(t,T))/(_q(t,T)*(1.-Q)-Q*np.exp(-l*t)*(1.-_q(t,T)))
+        y_prime = np.zeros(y.shape)
+        y_prime[0] = l*np.exp(-l*t)*(1.-y[1]) # dLam/dt
+        y_prime[1] = b*F*y[0]-b*(1.-y[1])	  # dGam/dt
+        return y_prime
+
+    def _Gamma(T,t_hat,t=None):
+        """solves for Gamma: either at T or over [t_hat,T]"""
+        y0 = np.array([1.-np.exp(-l*t_hat),0.]) 
+        if t:
+            sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0,t_eval=t)
+            return sol.y[1]
+        else:
+            sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0)
+            return sol.y[1][-1]
+
+    def _findbif(x): 
+        """
+        Finds the bifurcation point
+
+        Parameters
+        ----------
+        x : ndarray
+            Point (T,t) 
+
+        Notes
+        -----
+        The bifurcation point is the point (T,t) at which dq/dt = 0 and q = Q
+        """
+        T, t = x
+        return np.array([_VL(t,T)-(Q*l*Y/r-c),r*_VL(t,T)-l*_g(t)*(Y+_S(t,T))])
+
+    def _that(T): 
+        """
+        Find initial time for each final time using market beliefs
+
+        Parameters
+        ----------
+        T : float
+            Final time
+        """
+        y0 = np.array([1.-np.exp(-l*tau(T)),np.exp(-b*tau(T))]) 
+        sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0,events=that_evnt)
         return sol.y[1][-1]
 
-def findbif(x): 
-    """
-    Finds the bifurcation point
+    def _tau(T,upper=False): 
+        """
+        Find initial time for each final time using indifference
 
-    Parameters
-    ----------
-    x : ndarray
-        Point (T,t) 
-
-    Notes
-    -----
-    The bifurcation point is the point (T,t) at which dq/dt = 0 and q = Q
-    """
-    T, t = x
-    return np.array([_VL(t,T)-(Q*l*Y/r-c),r*_VL(t,T)-l*_g(t)*(Y+_S(t,T))])
-
-@np.vectorize
-def that(T): 
-    """
-    Find initial time for each final time using market beliefs
-
-    Parameters
-    ----------
-    T : float
-        Final time
-    """
-    y0 = np.array([1.-np.exp(-l*tau(T)),np.exp(-b*tau(T))]) 
-    sol = solve_ivp(lambda s,y: f(s,y,T),(tau(T),T),y0,events=that_evnt)
-    return sol.y[1][-1]
-
-@np.vectorize
-def tau(T,upper=False): 
-    """
-    Find initial time for each final time using indifference
-
-    Parameters
-    ----------
-    T : float
-        Final time
-    upper : bool
-        If True, returns both roots of q(t_hat,T) = Q; if False, returns the 
-        lesser root.
-    """
-    if T>T0:
-        if upper:
-            return root_scalar(lambda t: q(t,T)-Q,bracket=(t0,T)).root
-        else:
-            if T<T1:
-                return root_scalar(lambda t: q(t,T)-Q,bracket=(0,t0)).root
+        Parameters
+        ----------
+        T : float
+            Final time
+        upper : bool
+            If True, returns both roots of q(t_hat,T) = Q; if False, returns the 
+            lesser root.
+        """
+        if T>T0:
+            if upper:
+                return root_scalar(lambda t: q(t,T)-Q,bracket=(t0,T)).root
             else:
-                return np.nan
-    else:
-        return np.nan
+                if T<T1:
+                    return root_scalar(lambda t: q(t,T)-Q,bracket=(0,t0)).root
+                else:
+                    return np.nan
+        else:
+            return np.nan
 
 class Model:
 
-  def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=7,Y=1.):
+    def __init__(self,b=.1,c=.1,l=.5,r=.5,Q=7,Y=1.):
         """
         Parameters
         ----------
@@ -175,12 +200,6 @@ class Model:
         self.T_max = 10.
         self.opttol = 1.e-6
 
-        # solve for equilibrium T_star
-        if np.isinf(T1):
-            T_opt = root_scalar(G2,x0=1.5*T0,x1=2.*T0).root
-        else:
-            T_opt = root_scalar(G2,bracket=((1.+opttol)*T0,(1.-opttol)*T1)).root
-
         sol = root(findbif,np.array([2.,1.]))
         T0, t0 = sol.x
 
@@ -189,6 +208,12 @@ class Model:
             T1 = np.inf
         else:  
             T1 = sol.root
+
+        # solve for equilibrium T_star
+        if np.isinf(T1):
+            T_opt = root_scalar(G2,x0=1.5*T0,x1=2.*T0).root
+        else:
+            T_opt = root_scalar(G2,bracket=((1.+opttol)*T0,(1.-opttol)*T1)).root
 
     def plot(Tt_max,fname,N=200):
         """ 
@@ -219,7 +244,7 @@ class Model:
         # parameters
         xpos1 =  .3*Tt_max
         xpos2 =  .6*Tt_max
-        ypos =  .5*Tt_max
+        ypos =	.5*Tt_max
 
         # plotting vectors and matrices
         T_vec = np.linspace(0.,Tt_max,N)
